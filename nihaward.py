@@ -1,4 +1,4 @@
-'''
+"""
 This module is used for processing the U.S. National Institute of Health's (NIH's) list of yearly grant awards
 that are available online through their ExPORTER system. This system offers both CSV and XML version,
 however, only the XML version offers the additional one-to-many fields for project terms and 
@@ -6,14 +6,14 @@ principal investigators. Therefore, this processer only use the XML version.
 
 Given a particular fiscal year range, this will find the files on the NIH's ExPORTER website and download the files
 in their zipped format. It will then unpack the zipped file into the current working directory. Once downloaded
-there is an iterator to run through all of the files.
+there is an iterator to run through all of the projects in each of the files.
 
-Note: in past fiscal years, there is only one file per fiscal year. In the current fiscal year there is one file
+Note: in past federal fiscal years, there is only one file per fiscal year. In the current fiscal year there is one file
 per week.
 
 @author: Britton Ward (brittonward.com)
 
-'''
+"""
 
 
 try:
@@ -27,11 +27,15 @@ import urllib.request
 import shutil
 import os 
 import zipfile
-
+from datetime import datetime
 
 
 class NIHAward:
     """Class that holds fields found within an US National Institute of Health (NIH) grant award."""
+    
+    # Private lists of attributes of specific non-string data types.
+    _DATE_ATTRIBUTES = ['award_notice_date', 'budget_end', 'budget_start', 'project_end', 'project_start']
+    _INT_ATTRIBUTES = ['total_cost', 'total_cost_sub_project', 'application_id', 'org_district']
     
     def __init__(self, source_file_name, source_fiscal_year, source_file_date, source_file_row_number):
         """
@@ -44,7 +48,7 @@ class NIHAward:
         self.source_file_name = source_file_name
         self.source_fiscal_year = source_fiscal_year
         self.source_file_row_number = source_file_row_number
-        self.source_file_date = source_file_date
+        self.source_file_date = datetime.strptime(source_file_date, "%m/%d/%Y").date()
         
         # The names below are identical to the XML element names used within the file except they are lower case.
         self.application_id = '' # This uniquely identifies an instance of an award.
@@ -92,6 +96,32 @@ class NIHAward:
         self.project_terms = [] #Original Name: PROJECT_TERMSX
         self.principal_investigators = [] #Original Name: PIS
 
+    def setattr(self, name, value):
+        """
+        Sets a specific attribute of this object where value is conformed to a specific data type.
+        """
+        
+        lname = name.lower()
+        
+        if value is None:
+            if lname in self._INT_ATTRIBUTES:
+                setattr(self, lname, 0)
+            else:
+                setattr(self, lname, '')
+        
+        else:
+            svalue = value.strip()
+        
+            if lname in self._DATE_ATTRIBUTES:
+                try:
+                    setattr(self, lname, datetime.strptime(svalue[:10], "%m/%d/%Y").date())
+                except ValueError:
+                    setattr(self, lname, datetime.strptime(svalue[:10], "%Y-%m-%d").date())
+            
+            elif lname in self._INT_ATTRIBUTES:
+                setattr(self, lname, int(svalue))
+            else:
+                setattr(self, lname, svalue)
     
 
 class NIHAwardFile:
@@ -112,6 +142,7 @@ class NIHAwardFile:
     
     # Exceptions for tags we don't want to directly copy as single attributes of NIHAward() in the awarditer() function.
     _AVOIDED_XML_TAGS = ['PIS', 'PI', 'PI_NAME', 'PI_ID', 'PROJECT_TERMSX', 'TERM']
+    
         
     def __init__(self, fiscal_year_start, fiscal_year_stop = None):
         """initializes the NIHAwardFile class for a particular fiscal year range"""
@@ -185,7 +216,7 @@ class NIHAwardFile:
         localfile = os.path.basename(url)
         
         # NIH nicely names the XML file within the zip file using the same basename.
-        # In case we had previously downloaded and unzipped the file previously,
+        # In case we had previously downloaded and unzipped the file,
         # let's check whether the XML file is already present.
         if os.path.isfile(os.path.splitext(os.path.join(os.getcwd(), localfile))[0] + '.xml'):
             # There is a corresponding XML file of that name so do nothing but send back this file name.
@@ -252,7 +283,11 @@ class NIHAwardFile:
             row_number = 0
             
             # Loop through the possibly large XML file using SAX-style method found in ElementTree.
-            for event, elem in ET.iterparse(file["xml_file"], events=("start", "end")):
+            # The file's xml tag says it is encoded in UTF-8, but the 2011 file had an unacceptable character that generated
+            # the exception "xml.etree.ElementTree.ParseError: not well-formed (invalid token): line 1607749, column 35".
+            # Through trial and error, I discovered that the encoding below was best.
+            parser = ET.XMLParser(encoding="ISO-8859-1")
+            for event, elem in ET.iterparse(file["xml_file"], events=("start", "end"), parser=parser):
                 
                 if event == 'start':
                     if elem.tag == 'row':
@@ -276,17 +311,17 @@ class NIHAwardFile:
                         pass
                         
                     elif elem.tag == 'TERM':
-                        award.project_terms.append(elem.text)
+                        award.project_terms.append(elem.text.strip())
                     elif elem.tag == 'PI_NAME':
-                        pi_name = elem.text
+                        pi_name = elem.text.strip()
                     elif elem.tag == 'PI_ID':
-                        pi_id = elem.text
+                        pi_id = elem.text.strip()
                     elif elem.tag == 'PI':
                         if len(pi_name) > 0 or len(pi_id) > 0:
                             award.principal_investigators.append({'pi_name': pi_name, 'pi_id': pi_id})
                     elif elem.tag not in self._AVOIDED_XML_TAGS:
                         # Since I named most of the attributes (except for the above ones) in this class after the file's xml tags this is easy.
-                        setattr(award, elem.tag.lower(), elem.text)
+                        award.setattr(elem.tag, elem.text)
                         
             print('Finished processing file:', file["xml_file"])
             print('Total rows:', row_number)
